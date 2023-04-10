@@ -2,7 +2,7 @@ from reframed import Replay
 from datetime import datetime
 
 
-rfr = Replay("data/2022-03-17 - Friendlies - Player 1 (Lucina) vs Player 2 (Pikachu) Game 1.rfr")
+rfr = Replay("data/2023-04-04_23-59-52 -  - Free (WR1) -  (Byleth) vs  (Diddy Kong) - Game 1 (0-0) - Town and City.rfr")
 
 # Get player tags
 player_tags = [

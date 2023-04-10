@@ -15,10 +15,19 @@ class Replay:
 			except Exception as e:
 				print(e)
 
-		self.__data = json.loads(json_str)
-		self.__fix_types(self.__data)
+		is_json = False
+		try:
+			# Old approach was compressed json
+			self.__data = json.loads(json_str)
+			is_json = True
+			self.__fix_types(self.__data)
+		except Exception as e:
+			pass
 
-		if self.__data["version"] == "1.2":
+		if not is_json:
+			self.__unpack_modern_v1_0(filename)
+			self.__fix_types(self.__data)
+		elif self.__data["version"] == "1.2":
 			self.__unpack_states_v1_2()
 		elif self.__data["version"] == "1.3":
 			self.__unpack_states_v1_3()
@@ -53,7 +62,96 @@ class Replay:
 		data["mappinginfo"]["fighterstatus"]["specific"] = {int(k): v for k, v in data["mappinginfo"]["fighterstatus"]["specific"].items()}
 		data["mappinginfo"]["hitstatus"] = {int(k): v for k, v in data["mappinginfo"]["hitstatus"].items()}
 		data["mappinginfo"]["stageid"] = {int(k): v for k, v in data["mappinginfo"]["stageid"].items()}
-		
+
+	def __unpack_modern_v1_0(self, filename):
+		data = open(filename, "rb").read()
+		# Starts off with "RFR1" then has number of entries in table.
+		num_entries_in_table = int.from_bytes(data[4:5], "little")
+		# Flag, like ("META", "MAPI", "FDAT", "VIDM", or "VIDE") to (offset, size) tuple.
+		flag_to_bytes_offset = {}
+		self.__data = {}
+		for i in range(num_entries_in_table):
+			start = 5 + (i * 12)
+			flag = data[start : start + 4].decode("utf-8")
+			offset = int.from_bytes(data[start + 4 : start + 8], "little")
+			size = int.from_bytes(data[start + 8 : start + 12], "little")
+			flag_to_bytes_offset[flag] = (offset, size)
+
+		# TODO: "VIDE"
+		for (flag, key) in [("MAPI", 'mappinginfo'), ("META", None), ("VIDM", 'videoinfo')]:
+			# This is a typical json.
+			offset, size = flag_to_bytes_offset[flag]
+			json_bytes = data[offset : offset + size]
+			if key:
+				self.__data[key] = json.loads(json_bytes)
+			else:
+				self.__data.update(json.loads(json_bytes))
+
+		# Frame Data
+		if "FDAT" in flag_to_bytes_offset:
+			# This is a typical json.
+			offset, size = flag_to_bytes_offset["FDAT"]
+			frame_data_bytes = data[offset : offset + size]
+
+			# major_version = int.from_bytes(frame_data_bytes[0:1], "little")
+			# minor_version = int.from_bytes(frame_data_bytes[1:2], "little")
+			# uncompressed_size = int.from_bytes(frame_data_bytes[2:6], "little")
+
+			# The data was compressed using zlib. Now decompress it.
+			decompressed_frame_data_bytes = zlib.decompress(frame_data_bytes[6:])
+
+			num_frames = int.from_bytes(decompressed_frame_data_bytes[0:4], "little")
+			num_players = int.from_bytes(decompressed_frame_data_bytes[4:5], "little")
+
+			offset = 5
+
+			self.__data['playerstates'] = {}
+			for p in range(num_players):
+				if p not in self.__data['playerstates']:
+					self.__data['playerstates'][p] = []
+
+				# < = little endian
+				# I = unsigned int
+				for i in range(num_frames):
+					(
+						timestamp,
+						frames_left,
+						posx,
+						posy,
+						damage,
+						hitstun,
+						shield,
+						status,
+						motion_l,
+						motion_h,
+						hit_status,
+						stocks,
+						flags,
+					) = struct.unpack_from(
+						"<QIfffffHIBBBB", decompressed_frame_data_bytes, offset
+					)
+					offset += 42
+					motion = (motion_h << 32) | motion_l
+					self.__data['playerstates'][p].append(
+						dict(
+							frame_time_stamp=timestamp,
+							# Hmm
+							frame=i,
+							posx=posx,
+							posy=posy,
+							damage=damage,
+							hitstun=hitstun,
+							shield=shield,
+							status=status,
+							motion=motion,
+							hit_status=hit_status,
+							stocks=stocks,
+							attack_connected=True if flags & 0x01 else False,
+							facing_direction=True if flags & 0x02 else False,
+						)
+					)
+
+
 	def __unpack_states_v1_2(self):
 		# Playerstates are written to a buffer, which is then stored as a base64 encoded
 		# string inside the json. Convert the buffer into a structure and replace that node
